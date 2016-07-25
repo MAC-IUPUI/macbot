@@ -1,35 +1,38 @@
 var fs = require("fs");
 var mysql = require("mysql");
-var config;
-var db;
-var data;
-var robot;
+var env = {
+    config: null,
+    db: null,
+    data: null,
+    sql: {},
+    robot: null
+};
 
-function saveData() {
-    fs.writeFileSync("./data.json", JSON.stringify(data));
-}
+env.saveData = function() {
+    fs.writeFileSync("./data.json", JSON.stringify(env.data));
+};
 
-function loadData() {
+env.loadData = function() {
     try {
         fs.accessSync("./data.json");
     } catch (ex) {
         fs.writeFileSync("./data.json", "{}");
     }
-    data = JSON.parse(fs.readFileSync("./data.json"));
-    if (!data.users) {
-        data.users = {}; // {slackUsername : iuUsername}
+    env.data = JSON.parse(fs.readFileSync("./data.json"));
+    if (!env.data.users) {
+        env.data.users = {}; // {slackUsername : iuUsername}
     }
-    saveData();
-}
+    env.saveData();
+};
 
-function getPersonFromSlack(slackName, callback) {
-    if (data.users[slackName]) { // already found and cached
-        callback(data.users[slackName]);
+env.getPersonFromSlack = function(slackName, callback) {
+    if (env.data.users[slackName]) { // already found and cached
+        callback(env.data.users[slackName]);
         return;
     }
-    db.query("SELECT id FROM Person WHERE username = ?", [slackName], function(err, rows) {
+    env.db.query("SELECT id FROM Person WHERE username = ?", [slackName], function(err, rows) {
         if (err) {
-            robot.logger.info(err.message);
+            env.robot.logger.info(err.message);
             callback(null);
             return;
         }
@@ -37,64 +40,59 @@ function getPersonFromSlack(slackName, callback) {
             callback(null);
             return;
         }
-        data.users[slackName] = rows[0].id;
-        saveData();
+        env.data.users[slackName] = rows[0].id;
+        env.saveData();
         callback(rows[0].id);
     });
-}
+};
 
-function onClarify(res) {
-    getPersonFromSlack(res.match[1], function(id) {
-        if (id === null) {
-            res.reply("Still not sure what your username is. Please contact a dev for help!");
-            return;
-        }
-        data.users[res.message.user.name] = id;
-        saveData();
-        res.reply("Thanks! Your IU username is " + res.match[1] + ".");
-    });
-}
+env.onMessage = function(callback) {
+    return function(res) {
+        env.getPersonFromSlack(res.message.user.name, function(id) {
+            if (id === null) {
+                res.reply("Tell me what your IU username is, like this: \"@macbot my username is YOUR_USERNAME_HERE_PLEASE_THANKS\"");
+                return;
+            }
+            callback(res, env, id);
+        });
+    };
+};
 
-function onWorkingWithMe(res) {
-    getPersonFromSlack(res.message.user.name, function(id) {
-        if (id === null) {
-            res.reply("Tell me what your IU username is, like this: \"@macbot my username is YOUR_USERNAME_HERE_PLEASE_THANKS\"");
-            return;
-        }
-        res.reply("Hello, " + id);
-        // do stuff here
-    });
-}
-
-var commands = [
-    {
-        "regex": /.*working with me today.*/i,
-        "callback": onWorkingWithMe,
-        "type": "respond"
-    },
-    {
-        "regex": /my username is ([a-zA-Z0-9]+)/i,
-        "callback": onClarify,
-        "type": "respond"
+env.loadSQL = function() {
+    var files = fs.readdirSync("./sql");
+    for (var i = 0; i < files.length; i++) {
+        env.sql[files[i].split(".")[0]] = fs.readFileSync("./sql/" + files[i]).toString();
     }
-];
+};
 
-module.exports = function(_robot) {
-    config = JSON.parse(fs.readFileSync("./config/config.json").toString());
-    loadData();
-    robot = _robot;
-    db = mysql.createConnection(config.db);
-    db.on("error", function(err) {
-        robot.logger.info("Database error: " + err.code);
+env.loadDatabase = function() {
+    env.db = mysql.createConnection(env.config.db);
+    env.db.on("error", function(err) {
+        env.robot.logger.info("Database error: " + err.code);
     });
-    db.connect(function(err) {
+    env.db.connect(function(err) {
         if (err) {
-            robot.logger.info("Error connecting to MAC database: " + err.code);
+            env.robot.logger.info("Error connecting to MAC database: " + err.code);
         } else {
-            robot.logger.info("MAC database connected.");
+            env.robot.logger.info("MAC database connected.");
         }
     });
-    for (var i = 0; i < commands.length; i++) {
-        (robot[commands[i].type])(commands[i].regex, commands[i].callback);
+};
+
+env.loadHandlers = function() {
+    var files = fs.readdirSync("./handlers");
+    for (var i = 0; i < files.length; i++) {
+        var handler = require("../handlers/" + files[i]);
+        var callback = handler.useIU ? env.onMessage(handler.callback) : handler.callback;
+        env.robot.respond(handler.regex, callback);
     }
+};
+
+module.exports = function(robot) {
+    env.config = JSON.parse(fs.readFileSync("./config/config.json").toString());
+    env.robot = robot;
+    env.loadSQL();
+    env.loadData();
+    env.loadDatabase();
+    env.loadHandlers();
 };

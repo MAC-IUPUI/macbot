@@ -8,6 +8,10 @@ var env = {
     robot: null
 };
 
+env.getRandomInt = function(min, max) {
+    return Math.floor(Math.random() * (max - min)) + min;
+};
+
 env.saveData = function() {
     fs.writeFileSync("./data.json", JSON.stringify(env.data));
 };
@@ -46,18 +50,6 @@ env.getPersonFromSlack = function(slackName, callback) {
     });
 };
 
-env.onMessage = function(callback) {
-    return function(res) {
-        env.getPersonFromSlack(res.message.user.name, function(id) {
-            if (id === null) {
-                res.reply("Tell me what your IU username is, like this: \"@macbot my username is YOUR_USERNAME_HERE_PLEASE_THANKS\"");
-                return;
-            }
-            callback(res, env, id);
-        });
-    };
-};
-
 env.loadSQL = function() {
     var files = fs.readdirSync("./sql");
     for (var i = 0; i < files.length; i++) {
@@ -79,11 +71,32 @@ env.loadDatabase = function() {
     });
 };
 
+env.buildCallback = function(callback, useIU) {
+    if (useIU) {
+        return function(res) {
+            env.getPersonFromSlack(res.message.user.name, function(id) {
+                if (id === null) {
+                    res.reply("Tell me what your IU username is, like this: \"@macbot my username is YOUR_USERNAME_HERE_PLEASE_THANKS\"");
+                    return;
+                }
+                callback(res, env, id);
+            });
+        };
+    } else {
+        return function(res) {
+            callback(res, env);
+        };
+    }
+};
+
 env.loadHandlers = function() {
     var files = fs.readdirSync("./handlers");
     for (var i = 0; i < files.length; i++) {
         var handler = require("../handlers/" + files[i]);
-        var callback = handler.useIU ? env.onMessage(handler.callback) : handler.callback;
+        if (handler.init) {
+            handler.init(env);
+        }
+        var callback = env.buildCallback(handler.callback, handler.useIU);
         env.robot.respond(handler.regex, callback);
     }
 };
